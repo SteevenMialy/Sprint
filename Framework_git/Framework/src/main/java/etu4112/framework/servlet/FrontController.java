@@ -7,8 +7,8 @@ import java.util.HashMap;
 import java.util.Map;
 
 import com.google.gson.Gson;
+
 import etu4112.framework.annotation.RestAPI;
-import etu4112.framework.annotation.Url;
 import etu4112.framework.model.Mapping;
 import etu4112.framework.model.ModelAndView;
 import etu4112.framework.model.UrlMethode;
@@ -123,6 +123,7 @@ public class FrontController extends HttpServlet {
                     System.out.println("[Framework] Sprint 5 - Forward vers : " + viewPath);
 
                     // Forward vers la JSP
+                    //
                     RequestDispatcher dispatcher = request.getRequestDispatcher(viewPath);
                     dispatcher.forward(request, response);
                     return;
@@ -139,6 +140,7 @@ public class FrontController extends HttpServlet {
 
                 } else {
                     // Retour void ou autre : affichage simple de confirmation
+                    //
                     response.setContentType("text/html;charset=UTF-8");
                     try (PrintWriter out = response.getWriter()) {
                         out.println("<!DOCTYPE html><html><body>");
