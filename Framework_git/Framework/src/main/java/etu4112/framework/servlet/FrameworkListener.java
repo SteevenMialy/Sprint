@@ -10,7 +10,15 @@ import jakarta.servlet.ServletContextEvent;
 import jakarta.servlet.ServletContextListener;
 import jakarta.servlet.annotation.WebListener;
 
-
+/**
+ * Sprint 4 - FrameworkListener
+ * Exécuté par Tomcat au moment du DÉPLOIEMENT (t0), et non au premier chargement (t1).
+ * 
+ * Approche orientée objet :
+ * - On crée le HashMap ici
+ * - On le passe par référence à Utilitaire.scanAndFillMap() (void, pas de return)
+ * - On le stocke dans le ServletContext pour que le FrontController le récupère
+ */
 @WebListener
 public class FrameworkListener implements ServletContextListener {
 

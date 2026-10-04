@@ -23,13 +23,13 @@ public class Utilitaire {
         List<Class<?>> annotatedClasses = new ArrayList<>();
         debugLogs.clear();
         debugLogs.add("Début du scan pour le package : '" + packageName + "'");
-        
+
         try {
             String packagePath = packageName.replace('.', '/');
             ClassLoader classLoader = Thread.currentThread().getContextClassLoader();
-            
+
             Enumeration<URL> resources = classLoader.getResources(packagePath);
-            
+
             if (!resources.hasMoreElements()) {
                 debugLogs.add("⚠️ AUCUNE ressource trouvée pour le chemin : " + packagePath);
             }
@@ -37,9 +37,9 @@ public class Utilitaire {
             while (resources.hasMoreElements()) {
                 URL resource = resources.nextElement();
                 debugLogs.add("Ressource trouvée ! Protocole : '" + resource.getProtocol() + "' | URL : " + resource.toString());
-                
+
                 String decodedPath = URLDecoder.decode(resource.getFile(), StandardCharsets.UTF_8);
-                
+
                 if (decodedPath.startsWith("file:")) {
                     decodedPath = decodedPath.substring(5);
                 }
@@ -126,7 +126,7 @@ public class Utilitaire {
                 try {
                     String className = file.getName().substring(0, file.getName().length() - 6);
                     String fullClassName = packageName.isEmpty() ? className : packageName + "." + className;
-                    
+
                     debugLogs.add("Fichier .class trouvé : " + fullClassName);
 
                     Class<?> clazz = Class.forName(fullClassName);

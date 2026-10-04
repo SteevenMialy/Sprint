@@ -6,6 +6,9 @@ import java.lang.reflect.Method;
 import java.util.HashMap;
 import java.util.Map;
 
+import com.google.gson.Gson;
+import etu4112.framework.annotation.RestAPI;
+import etu4112.framework.annotation.Url;
 import etu4112.framework.model.Mapping;
 import etu4112.framework.model.ModelAndView;
 import etu4112.framework.model.UrlMethode;
@@ -19,6 +22,7 @@ public class FrontController extends HttpServlet {
 
     private HashMap<UrlMethode, Mapping> mappingUrl;
 
+    // Sprint 5 - View Resolver : préfixe et suffixe pour les chemins JSP
     private String prefixe;
     private String suffixe;
 
@@ -26,7 +30,8 @@ public class FrontController extends HttpServlet {
     public void init() throws ServletException {
         super.init();
 
-    
+        // Sprint 4 : récupération du map rempli par le FrameworkListener au déploiement
+        // Le listener a déjà fait le scan et rempli le map (passage par référence, void)
         @SuppressWarnings("unchecked")
         HashMap<UrlMethode, Mapping> mapFromContext =
                 (HashMap<UrlMethode, Mapping>) getServletContext().getAttribute("mappingUrl");
@@ -41,6 +46,8 @@ public class FrontController extends HttpServlet {
             System.out.println("[Framework] ATTENTION : aucun map trouvé dans le contexte. Le FrameworkListener a-t-il été chargé ?");
         }
 
+        // Sprint 5 - Lecture des init-param préfixe et suffixe (view resolver)
+        // Dans web.xml : <init-param> prefixe = WEB-INF/views/ , suffixe = .jsp
         this.prefixe = this.getInitParameter("prefixe");
         if (this.prefixe == null) {
             this.prefixe = "WEB-INF/views/";
@@ -63,6 +70,7 @@ public class FrontController extends HttpServlet {
 
         UrlMethode currentUrlMethode = new UrlMethode(urlSaisi, requestMethod);
 
+        // Vérification : l'URL existe-t-elle dans le dictionnaire ?
         if (!urlSaisi.isEmpty() && this.mappingUrl.containsKey(currentUrlMethode)) {
             Mapping mapping = this.mappingUrl.get(currentUrlMethode);
 
@@ -71,6 +79,30 @@ public class FrontController extends HttpServlet {
                 Class<?> cls = Class.forName(mapping.getClassName());
                 Object instance = cls.getDeclaredConstructor().newInstance();
                 Method m = cls.getDeclaredMethod(mapping.getMethodName());
+
+                // Sprint 6 : Vérifier si la méthode a l'annotation @RestAPI
+                boolean isRestAPI = m.isAnnotationPresent(RestAPI.class);
+
+                // Sprint 6 : Si @RestAPI est présente, retourner du JSON
+                if (isRestAPI) {
+                    response.setContentType("application/json;charset=UTF-8");
+                    Object result = m.invoke(instance);
+
+                    PrintWriter out = response.getWriter();
+                    if (result instanceof String) {
+                        // Si c'est une String, l'écrire directement
+                        out.print(result);
+                    } else {
+                        // Sinon, convertir en JSON avec Gson
+                        Gson gson = new Gson();
+                        String json = gson.toJson(result);
+                        out.print(json);
+                    }
+                    out.flush();
+                    return;
+                }
+
+                // Sprint 5 : Si pas @RestAPI, exécuter normalement
                 Object result = m.invoke(instance);
 
                 // Sprint 5 : si le retour est un ModelAndView
@@ -124,7 +156,7 @@ public class FrontController extends HttpServlet {
                 response.setContentType("text/html;charset=UTF-8");
                 try (PrintWriter out = response.getWriter()) {
                     out.println("<!DOCTYPE html><html><body>");
-                    out.println("<h2 style='color: red;'> Erreur lors de l'invocation</h2>");
+                    out.println("<h2 style='color: red;'>❌ Erreur lors de l'invocation</h2>");
                     out.println("<p>" + e.getMessage() + "</p>");
                     out.println("</body></html>");
                 }
@@ -149,7 +181,7 @@ public class FrontController extends HttpServlet {
                 if (urlSaisi.isEmpty()) {
                     out.println("<h3>Bienvenue ! Aucune URL spécifiée.</h3>");
                 } else {
-                    out.println("<h3 style='color: red;'> URL [" + requestMethod + "] '/" + urlSaisi + "' non trouvée.</h3>");
+                    out.println("<h3 style='color: red;'>❌ URL [" + requestMethod + "] '/" + urlSaisi + "' non trouvée.</h3>");
                 }
 
                 out.println("<h3>📋 Routes enregistrées :</h3>");
