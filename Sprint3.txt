@@ -1,0 +1,9 @@
+- A 
+methode htpp (action de url)
+    @url("/test", "GET")
+    @url("/test", "POST")
+classe urlMethode: deux variable url et methode
+    avec fonction avec equals
+
+- B
+execute le methode avec GET par defaut toujours instancencer 

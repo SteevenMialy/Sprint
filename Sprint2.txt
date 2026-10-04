@@ -1,0 +1,4 @@
+annotation pour methode(mettre de variable)
+ prendre  l' url  s'il y a  l' annotation par methode avec  @ methode et  class associer
+
+verifier si supporte le url(throws exception)

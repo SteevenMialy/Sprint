@@ -1,0 +1,10 @@
+identification controlleur
+	class annotaion dans mg.itu.xxxx.annotation.Controller
+	chargement classe path
+		parcour un package specifique
+		parcour tout les package All
+	demarge appli web (optionnel) (void init(), contextlistener)
+ verifier l'existance des annotaions dans les classes
+
+List<String> listcontroller
+class utilitaire mandray ny anarana package sy annotation
