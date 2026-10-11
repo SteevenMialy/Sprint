@@ -2,13 +2,16 @@ package etu4112.framework.servlet;
 
 import java.io.IOException;
 import java.io.PrintWriter;
+import java.lang.reflect.Field;
+import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
+import java.lang.reflect.Modifier;
 import java.util.HashMap;
 import java.util.Map;
 
 import com.google.gson.Gson;
+
 import etu4112.framework.annotation.RestAPI;
-import etu4112.framework.annotation.Url;
 import etu4112.framework.model.Mapping;
 import etu4112.framework.model.ModelAndView;
 import etu4112.framework.model.UrlMethode;
@@ -78,7 +81,8 @@ public class FrontController extends HttpServlet {
                 // Instanciation et invocation de la méthode du contrôleur
                 Class<?> cls = Class.forName(mapping.getClassName());
                 Object instance = cls.getDeclaredConstructor().newInstance();
-                Method m = cls.getDeclaredMethod(mapping.getMethodName());
+                Method m = findControllerMethod(cls, mapping.getMethodName());
+                Object[] arguments = resolveArguments(m, request);
 
                 // Sprint 6 : Vérifier si la méthode a l'annotation @RestAPI
                 boolean isRestAPI = m.isAnnotationPresent(RestAPI.class);
@@ -86,7 +90,7 @@ public class FrontController extends HttpServlet {
                 // Sprint 6 : Si @RestAPI est présente, retourner du JSON
                 if (isRestAPI) {
                     response.setContentType("application/json;charset=UTF-8");
-                    Object result = m.invoke(instance);
+                    Object result = invoke(m, instance, arguments);
 
                     PrintWriter out = response.getWriter();
                     if (result instanceof String) {
@@ -103,7 +107,7 @@ public class FrontController extends HttpServlet {
                 }
 
                 // Sprint 5 : Si pas @RestAPI, exécuter normalement
-                Object result = m.invoke(instance);
+                Object result = invoke(m, instance, arguments);
 
                 // Sprint 5 : si le retour est un ModelAndView
                 if (result instanceof ModelAndView) {
@@ -123,6 +127,7 @@ public class FrontController extends HttpServlet {
                     System.out.println("[Framework] Sprint 5 - Forward vers : " + viewPath);
 
                     // Forward vers la JSP
+                    //
                     RequestDispatcher dispatcher = request.getRequestDispatcher(viewPath);
                     dispatcher.forward(request, response);
                     return;
@@ -139,6 +144,7 @@ public class FrontController extends HttpServlet {
 
                 } else {
                     // Retour void ou autre : affichage simple de confirmation
+                    //
                     response.setContentType("text/html;charset=UTF-8");
                     try (PrintWriter out = response.getWriter()) {
                         out.println("<!DOCTYPE html><html><body>");
@@ -200,6 +206,140 @@ public class FrontController extends HttpServlet {
 
                 out.println("</body></html>");
             }
+        }
+    }
+
+    private Method findControllerMethod(Class<?> controllerType, String methodName)
+            throws NoSuchMethodException {
+        for (Method method : controllerType.getDeclaredMethods()) {
+            if (method.getName().equals(methodName)) {
+                return method;
+            }
+        }
+        throw new NoSuchMethodException("Méthode '" + methodName + "' introuvable dans "
+                + controllerType.getName() + ".");
+    }
+
+    /**
+     * Sprint 7/7 bis : construit les arguments d'une méthode à partir des
+     * paramètres HTTP. Une méthode sans argument reçoit un tableau vide.
+     * Un argument simple est associé au paramètre portant le nom de l'argument.
+     * Un argument objet est créé puis ses champs sont associés aux paramètres
+     * portant le nom de ces champs.
+     */
+    private Object[] resolveArguments(Method method, HttpServletRequest request) throws Exception {
+        Class<?>[] parameterTypes = method.getParameterTypes();
+        if (parameterTypes.length == 0) {
+            return new Object[0];
+        }
+
+        Object[] arguments = new Object[parameterTypes.length];
+        if (parameterTypes.length == 1 && !isSimpleType(parameterTypes[0])) {
+            arguments[0] = bindObject(parameterTypes[0], request);
+            return arguments;
+        }
+
+        for (int i = 0; i < parameterTypes.length; i++) {
+            String parameterName = method.getParameters()[i].getName();
+            String value = request.getParameter(parameterName);
+            arguments[i] = convertValue(value, parameterTypes[i], parameterName);
+        }
+        return arguments;
+    }
+
+    private Object bindObject(Class<?> objectType, HttpServletRequest request) throws Exception {
+        Object object = objectType.getDeclaredConstructor().newInstance();
+        for (Field field : getInstanceFields(objectType)) {
+            String value = request.getParameter(field.getName());
+            if (value == null) {
+                continue;
+            }
+
+            Object convertedValue = convertValue(value, field.getType(), field.getName());
+            boolean accessible = field.isAccessible();
+            try {
+                if (!accessible) {
+                    field.setAccessible(true);
+                }
+                field.set(object, convertedValue);
+            } finally {
+                if (!accessible) {
+                    field.setAccessible(false);
+                }
+            }
+        }
+        return object;
+    }
+
+    private Field[] getInstanceFields(Class<?> objectType) {
+        Map<String, Field> fields = new HashMap<>();
+        Class<?> currentType = objectType;
+        while (currentType != null && currentType != Object.class) {
+            for (Field field : currentType.getDeclaredFields()) {
+                int modifiers = field.getModifiers();
+                if (!Modifier.isStatic(modifiers) && !field.isSynthetic()) {
+                    fields.putIfAbsent(field.getName(), field);
+                }
+            }
+            currentType = currentType.getSuperclass();
+        }
+        return fields.values().toArray(new Field[0]);
+    }
+
+    private boolean isSimpleType(Class<?> type) {
+        return type == String.class
+                || type == Integer.class || type == int.class
+                || type == Long.class || type == long.class
+                || type == Double.class || type == double.class
+                || type == Float.class || type == float.class
+                || type == Short.class || type == short.class
+                || type == Byte.class || type == byte.class
+                || type == Boolean.class || type == boolean.class
+                || type == Character.class || type == char.class;
+    }
+
+    private Object convertValue(String value, Class<?> targetType, String parameterName) {
+        if (value == null || value.trim().isEmpty()) {
+            if (!targetType.isPrimitive()) {
+                return null;
+            }
+            throw new IllegalArgumentException("Le paramètre '" + parameterName
+                    + "' est obligatoire pour le type primitif " + targetType.getSimpleName() + ".");
+        }
+
+        try {
+            if (targetType == String.class) return value;
+            if (targetType == Integer.class || targetType == int.class) return Integer.valueOf(value);
+            if (targetType == Long.class || targetType == long.class) return Long.valueOf(value);
+            if (targetType == Double.class || targetType == double.class) return Double.valueOf(value);
+            if (targetType == Float.class || targetType == float.class) return Float.valueOf(value);
+            if (targetType == Short.class || targetType == short.class) return Short.valueOf(value);
+            if (targetType == Byte.class || targetType == byte.class) return Byte.valueOf(value);
+            if (targetType == Boolean.class || targetType == boolean.class) return Boolean.valueOf(value);
+            if (targetType == Character.class || targetType == char.class) {
+                if (value.length() != 1) {
+                    throw new IllegalArgumentException("Le paramètre '" + parameterName
+                            + "' doit contenir un seul caractère.");
+                }
+                return value.charAt(0);
+            }
+        } catch (NumberFormatException e) {
+            throw new IllegalArgumentException("Le paramètre '" + parameterName
+                    + "' a une valeur invalide pour le type " + targetType.getSimpleName() + ".", e);
+        }
+        throw new IllegalArgumentException("Type de paramètre non supporté : "
+                + targetType.getName() + " (paramètre '" + parameterName + "').");
+    }
+
+    private Object invoke(Method method, Object instance, Object[] arguments) throws Exception {
+        try {
+            return method.invoke(instance, arguments);
+        } catch (InvocationTargetException e) {
+            Throwable cause = e.getCause();
+            if (cause instanceof Exception) {
+                throw (Exception) cause;
+            }
+            throw e;
         }
     }
 
