@@ -1,6 +1,7 @@
 package etu4112.framework.servlet;
 
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.PrintWriter;
 import java.lang.reflect.Field;
 import java.lang.reflect.InvocationTargetException;
@@ -17,10 +18,14 @@ import etu4112.framework.model.ModelAndView;
 import etu4112.framework.model.UrlMethode;
 import jakarta.servlet.RequestDispatcher;
 import jakarta.servlet.ServletException;
+import jakarta.servlet.annotation.MultipartConfig;
 import jakarta.servlet.http.HttpServlet;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
+import jakarta.servlet.http.Part;
+import etu4112.framework.upload.FileUpload;
 
+@MultipartConfig
 public class FrontController extends HttpServlet {
 
     private HashMap<UrlMethode, Mapping> mappingUrl;
@@ -70,6 +75,10 @@ public class FrontController extends HttpServlet {
         String pathInfo = request.getPathInfo();
         String urlSaisi = (pathInfo != null && pathInfo.length() > 1) ? pathInfo.substring(1) : "";
         String requestMethod = request.getMethod().toUpperCase();
+
+        if (serveStaticResource(request, response, pathInfo)) {
+            return;
+        }
 
         UrlMethode currentUrlMethode = new UrlMethode(urlSaisi, requestMethod);
 
@@ -209,6 +218,29 @@ public class FrontController extends HttpServlet {
         }
     }
 
+    private boolean serveStaticResource(HttpServletRequest request,
+            HttpServletResponse response, String pathInfo) throws IOException {
+        if (pathInfo == null || pathInfo.isEmpty() || pathInfo.endsWith("/")
+                || "GET".equalsIgnoreCase(request.getMethod())
+                && pathInfo.equals("/upload")) {
+            return false;
+        }
+
+        String resourcePath = pathInfo.startsWith("/") ? pathInfo : "/" + pathInfo;
+        try (InputStream resource = getServletContext().getResourceAsStream(resourcePath)) {
+            if (resource == null) {
+                return false;
+            }
+
+            String contentType = getServletContext().getMimeType(resourcePath);
+            if (contentType != null) {
+                response.setContentType(contentType);
+            }
+            resource.transferTo(response.getOutputStream());
+            return true;
+        }
+    }
+
     private Method findControllerMethod(Class<?> controllerType, String methodName)
             throws NoSuchMethodException {
         for (Method method : controllerType.getDeclaredMethods()) {
@@ -241,21 +273,32 @@ public class FrontController extends HttpServlet {
 
         for (int i = 0; i < parameterTypes.length; i++) {
             String parameterName = method.getParameters()[i].getName();
-            String value = request.getParameter(parameterName);
-            arguments[i] = convertValue(value, parameterTypes[i], parameterName);
+            arguments[i] = resolveParameter(parameterTypes[i], parameterName, request);
         }
         return arguments;
+    }
+
+    private Object resolveParameter(Class<?> type, String name, HttpServletRequest request)
+            throws Exception {
+        if (type == FileUpload.class) {
+            return isMultipart(request) ? toFileUpload(request.getPart(name)) : null;
+        }
+
+        String value = request.getParameter(name);
+        return convertValue(value, type, name);
     }
 
     private Object bindObject(Class<?> objectType, HttpServletRequest request) throws Exception {
         Object object = objectType.getDeclaredConstructor().newInstance();
         for (Field field : getInstanceFields(objectType)) {
-            String value = request.getParameter(field.getName());
-            if (value == null) {
+            Object convertedValue = resolveParameter(field.getType(), field.getName(), request);
+            if (convertedValue == null && field.getType().isPrimitive()) {
                 continue;
             }
-
-            Object convertedValue = convertValue(value, field.getType(), field.getName());
+            if (convertedValue == null && request.getParameter(field.getName()) == null
+                    && field.getType() != FileUpload.class) {
+                continue;
+            }
             boolean accessible = field.isAccessible();
             try {
                 if (!accessible) {
@@ -269,6 +312,26 @@ public class FrontController extends HttpServlet {
             }
         }
         return object;
+    }
+
+    private boolean isMultipart(HttpServletRequest request) {
+        String contentType = request.getContentType();
+        return contentType != null && contentType.toLowerCase().startsWith("multipart/");
+    }
+
+    private FileUpload toFileUpload(Part part) throws IOException {
+        if (part == null || part.getSize() == 0) {
+            return null;
+        }
+
+        FileUpload fileUpload = new FileUpload();
+        fileUpload.setFileName(part.getSubmittedFileName());
+        fileUpload.setContentType(part.getContentType());
+        fileUpload.setSize(part.getSize());
+        try (java.io.InputStream inputStream = part.getInputStream()) {
+            fileUpload.setContent(inputStream.readAllBytes());
+        }
+        return fileUpload;
     }
 
     private Field[] getInstanceFields(Class<?> objectType) {
