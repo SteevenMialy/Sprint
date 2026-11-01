@@ -70,7 +70,8 @@ copy /y "%FRAMEWORK_JAR%" "%TARGET_DIR%\WEB-INF\lib\framework.jar" >nul
 copy /y "%GSON_JAR%" "%TARGET_DIR%\WEB-INF\lib\gson-2.10.1.jar" >nul
 
 echo.
-echo Deploiement Sprint 8 termine.
+echo Deploiement Sprint 9-11 termine.
 echo Formulaire : http://localhost:8082/sprint8/upload.html
+echo Authentification : http://localhost:8082/sprint8/auth.html
 echo.
 endlocal

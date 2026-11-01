@@ -13,6 +13,8 @@ import java.util.Map;
 import com.google.gson.Gson;
 
 import etu4112.framework.annotation.RestAPI;
+import etu4112.framework.annotation.Authenticated;
+import etu4112.framework.annotation.Role;
 import etu4112.framework.model.Mapping;
 import etu4112.framework.model.ModelAndView;
 import etu4112.framework.model.UrlMethode;
@@ -22,6 +24,7 @@ import jakarta.servlet.annotation.MultipartConfig;
 import jakarta.servlet.http.HttpServlet;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
+import jakarta.servlet.http.HttpSession;
 import jakarta.servlet.http.Part;
 import etu4112.framework.upload.FileUpload;
 
@@ -29,6 +32,7 @@ import etu4112.framework.upload.FileUpload;
 public class FrontController extends HttpServlet {
 
     private HashMap<UrlMethode, Mapping> mappingUrl;
+    private final Map<String, Object> controllerInstances = new HashMap<>();
 
     // Sprint 5 - View Resolver : préfixe et suffixe pour les chemins JSP
     private String prefixe;
@@ -89,8 +93,9 @@ public class FrontController extends HttpServlet {
             try {
                 // Instanciation et invocation de la méthode du contrôleur
                 Class<?> cls = Class.forName(mapping.getClassName());
-                Object instance = cls.getDeclaredConstructor().newInstance();
+                Object instance = getControllerInstance(cls);
                 Method m = findControllerMethod(cls, mapping.getMethodName());
+                checkAccess(m, request);
                 Object[] arguments = resolveArguments(m, request);
 
                 // Sprint 6 : Vérifier si la méthode a l'annotation @RestAPI
@@ -168,6 +173,12 @@ public class FrontController extends HttpServlet {
                 }
 
             } catch (Exception e) {
+                if (e instanceof SecurityException) {
+                    response.setStatus(e.getMessage() != null
+                            && e.getMessage().startsWith("Connexion requise")
+                            ? HttpServletResponse.SC_UNAUTHORIZED
+                            : HttpServletResponse.SC_FORBIDDEN);
+                }
                 response.setContentType("text/html;charset=UTF-8");
                 try (PrintWriter out = response.getWriter()) {
                     out.println("<!DOCTYPE html><html><body>");
@@ -252,6 +263,36 @@ public class FrontController extends HttpServlet {
                 + controllerType.getName() + ".");
     }
 
+    private Object getControllerInstance(Class<?> controllerType) throws Exception {
+        synchronized (controllerInstances) {
+            Object instance = controllerInstances.get(controllerType.getName());
+            if (instance == null) {
+                instance = controllerType.getDeclaredConstructor().newInstance();
+                controllerInstances.put(controllerType.getName(), instance);
+            }
+            return instance;
+        }
+    }
+
+    private void checkAccess(Method method, HttpServletRequest request) {
+        HttpSession session = request.getSession(false);
+        boolean authenticated = session != null && session.getAttribute("user") != null;
+        if (method.isAnnotationPresent(Authenticated.class) && !authenticated) {
+            throw new SecurityException("Connexion requise pour exécuter la méthode '"
+                    + method.getName() + "'.");
+        }
+
+        Role role = method.getAnnotation(Role.class);
+        if (role != null) {
+            Object currentRole = session == null ? null : session.getAttribute("role");
+            if (!authenticated || currentRole == null
+                    || !role.value().equals(currentRole.toString())) {
+                throw new SecurityException("Le rôle '" + role.value()
+                        + "' est requis pour exécuter la méthode '" + method.getName() + "'.");
+            }
+        }
+    }
+
     /**
      * Sprint 7/7 bis : construit les arguments d'une méthode à partir des
      * paramètres HTTP. Une méthode sans argument reçoit un tableau vide.
@@ -266,6 +307,10 @@ public class FrontController extends HttpServlet {
         }
 
         Object[] arguments = new Object[parameterTypes.length];
+        if (parameterTypes.length == 1 && parameterTypes[0] == HttpSession.class) {
+            arguments[0] = request.getSession();
+            return arguments;
+        }
         if (parameterTypes.length == 1 && !isSimpleType(parameterTypes[0])) {
             arguments[0] = bindObject(parameterTypes[0], request);
             return arguments;
@@ -280,6 +325,9 @@ public class FrontController extends HttpServlet {
 
     private Object resolveParameter(Class<?> type, String name, HttpServletRequest request)
             throws Exception {
+        if (type == HttpSession.class) {
+            return request.getSession();
+        }
         if (type == FileUpload.class) {
             return isMultipart(request) ? toFileUpload(request.getPart(name)) : null;
         }
