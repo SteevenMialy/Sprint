@@ -1,26 +1,38 @@
 package etu4112.framework.servlet;
 
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.PrintWriter;
+import java.lang.reflect.Field;
+import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
+import java.lang.reflect.Modifier;
 import java.util.HashMap;
 import java.util.Map;
 
 import com.google.gson.Gson;
+
 import etu4112.framework.annotation.RestAPI;
-import etu4112.framework.annotation.Url;
+import etu4112.framework.annotation.Authenticated;
+import etu4112.framework.annotation.Role;
 import etu4112.framework.model.Mapping;
 import etu4112.framework.model.ModelAndView;
 import etu4112.framework.model.UrlMethode;
 import jakarta.servlet.RequestDispatcher;
 import jakarta.servlet.ServletException;
+import jakarta.servlet.annotation.MultipartConfig;
 import jakarta.servlet.http.HttpServlet;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
+import jakarta.servlet.http.HttpSession;
+import jakarta.servlet.http.Part;
+import etu4112.framework.upload.FileUpload;
 
+@MultipartConfig
 public class FrontController extends HttpServlet {
 
     private HashMap<UrlMethode, Mapping> mappingUrl;
+    private final Map<String, Object> controllerInstances = new HashMap<>();
 
     // Sprint 5 - View Resolver : préfixe et suffixe pour les chemins JSP
     private String prefixe;
@@ -68,6 +80,10 @@ public class FrontController extends HttpServlet {
         String urlSaisi = (pathInfo != null && pathInfo.length() > 1) ? pathInfo.substring(1) : "";
         String requestMethod = request.getMethod().toUpperCase();
 
+        if (serveStaticResource(request, response, pathInfo)) {
+            return;
+        }
+
         UrlMethode currentUrlMethode = new UrlMethode(urlSaisi, requestMethod);
 
         // Vérification : l'URL existe-t-elle dans le dictionnaire ?
@@ -77,8 +93,10 @@ public class FrontController extends HttpServlet {
             try {
                 // Instanciation et invocation de la méthode du contrôleur
                 Class<?> cls = Class.forName(mapping.getClassName());
-                Object instance = cls.getDeclaredConstructor().newInstance();
-                Method m = cls.getDeclaredMethod(mapping.getMethodName());
+                Object instance = getControllerInstance(cls);
+                Method m = findControllerMethod(cls, mapping.getMethodName());
+                checkAccess(m, request);
+                Object[] arguments = resolveArguments(m, request);
 
                 // Sprint 6 : Vérifier si la méthode a l'annotation @RestAPI
                 boolean isRestAPI = m.isAnnotationPresent(RestAPI.class);
@@ -86,7 +104,7 @@ public class FrontController extends HttpServlet {
                 // Sprint 6 : Si @RestAPI est présente, retourner du JSON
                 if (isRestAPI) {
                     response.setContentType("application/json;charset=UTF-8");
-                    Object result = m.invoke(instance);
+                    Object result = invoke(m, instance, arguments);
 
                     PrintWriter out = response.getWriter();
                     if (result instanceof String) {
@@ -103,7 +121,7 @@ public class FrontController extends HttpServlet {
                 }
 
                 // Sprint 5 : Si pas @RestAPI, exécuter normalement
-                Object result = m.invoke(instance);
+                Object result = invoke(m, instance, arguments);
 
                 // Sprint 5 : si le retour est un ModelAndView
                 if (result instanceof ModelAndView) {
@@ -123,6 +141,7 @@ public class FrontController extends HttpServlet {
                     System.out.println("[Framework] Sprint 5 - Forward vers : " + viewPath);
 
                     // Forward vers la JSP
+                    //
                     RequestDispatcher dispatcher = request.getRequestDispatcher(viewPath);
                     dispatcher.forward(request, response);
                     return;
@@ -139,6 +158,7 @@ public class FrontController extends HttpServlet {
 
                 } else {
                     // Retour void ou autre : affichage simple de confirmation
+                    //
                     response.setContentType("text/html;charset=UTF-8");
                     try (PrintWriter out = response.getWriter()) {
                         out.println("<!DOCTYPE html><html><body>");
@@ -153,6 +173,12 @@ public class FrontController extends HttpServlet {
                 }
 
             } catch (Exception e) {
+                if (e instanceof SecurityException) {
+                    response.setStatus(e.getMessage() != null
+                            && e.getMessage().startsWith("Connexion requise")
+                            ? HttpServletResponse.SC_UNAUTHORIZED
+                            : HttpServletResponse.SC_FORBIDDEN);
+                }
                 response.setContentType("text/html;charset=UTF-8");
                 try (PrintWriter out = response.getWriter()) {
                     out.println("<!DOCTYPE html><html><body>");
@@ -200,6 +226,231 @@ public class FrontController extends HttpServlet {
 
                 out.println("</body></html>");
             }
+        }
+    }
+
+    private boolean serveStaticResource(HttpServletRequest request,
+            HttpServletResponse response, String pathInfo) throws IOException {
+        if (pathInfo == null || pathInfo.isEmpty() || pathInfo.endsWith("/")
+                || "GET".equalsIgnoreCase(request.getMethod())
+                && pathInfo.equals("/upload")) {
+            return false;
+        }
+
+        String resourcePath = pathInfo.startsWith("/") ? pathInfo : "/" + pathInfo;
+        try (InputStream resource = getServletContext().getResourceAsStream(resourcePath)) {
+            if (resource == null) {
+                return false;
+            }
+
+            String contentType = getServletContext().getMimeType(resourcePath);
+            if (contentType != null) {
+                response.setContentType(contentType);
+            }
+            resource.transferTo(response.getOutputStream());
+            return true;
+        }
+    }
+
+    private Method findControllerMethod(Class<?> controllerType, String methodName)
+            throws NoSuchMethodException {
+        for (Method method : controllerType.getDeclaredMethods()) {
+            if (method.getName().equals(methodName)) {
+                return method;
+            }
+        }
+        throw new NoSuchMethodException("Méthode '" + methodName + "' introuvable dans "
+                + controllerType.getName() + ".");
+    }
+
+    private Object getControllerInstance(Class<?> controllerType) throws Exception {
+        synchronized (controllerInstances) {
+            Object instance = controllerInstances.get(controllerType.getName());
+            if (instance == null) {
+                instance = controllerType.getDeclaredConstructor().newInstance();
+                controllerInstances.put(controllerType.getName(), instance);
+            }
+            return instance;
+        }
+    }
+
+    private void checkAccess(Method method, HttpServletRequest request) {
+        HttpSession session = request.getSession(false);
+        boolean authenticated = session != null && session.getAttribute("user") != null;
+        if (method.isAnnotationPresent(Authenticated.class) && !authenticated) {
+            throw new SecurityException("Connexion requise pour exécuter la méthode '"
+                    + method.getName() + "'.");
+        }
+
+        Role role = method.getAnnotation(Role.class);
+        if (role != null) {
+            Object currentRole = session == null ? null : session.getAttribute("role");
+            if (!authenticated || currentRole == null
+                    || !role.value().equals(currentRole.toString())) {
+                throw new SecurityException("Le rôle '" + role.value()
+                        + "' est requis pour exécuter la méthode '" + method.getName() + "'.");
+            }
+        }
+    }
+
+    /**
+     * Sprint 7/7 bis : construit les arguments d'une méthode à partir des
+     * paramètres HTTP. Une méthode sans argument reçoit un tableau vide.
+     * Un argument simple est associé au paramètre portant le nom de l'argument.
+     * Un argument objet est créé puis ses champs sont associés aux paramètres
+     * portant le nom de ces champs.
+     */
+    private Object[] resolveArguments(Method method, HttpServletRequest request) throws Exception {
+        Class<?>[] parameterTypes = method.getParameterTypes();
+        if (parameterTypes.length == 0) {
+            return new Object[0];
+        }
+
+        Object[] arguments = new Object[parameterTypes.length];
+        if (parameterTypes.length == 1 && parameterTypes[0] == HttpSession.class) {
+            arguments[0] = request.getSession();
+            return arguments;
+        }
+        if (parameterTypes.length == 1 && !isSimpleType(parameterTypes[0])) {
+            arguments[0] = bindObject(parameterTypes[0], request);
+            return arguments;
+        }
+
+        for (int i = 0; i < parameterTypes.length; i++) {
+            String parameterName = method.getParameters()[i].getName();
+            arguments[i] = resolveParameter(parameterTypes[i], parameterName, request);
+        }
+        return arguments;
+    }
+
+    private Object resolveParameter(Class<?> type, String name, HttpServletRequest request)
+            throws Exception {
+        if (type == HttpSession.class) {
+            return request.getSession();
+        }
+        if (type == FileUpload.class) {
+            return isMultipart(request) ? toFileUpload(request.getPart(name)) : null;
+        }
+
+        String value = request.getParameter(name);
+        return convertValue(value, type, name);
+    }
+
+    private Object bindObject(Class<?> objectType, HttpServletRequest request) throws Exception {
+        Object object = objectType.getDeclaredConstructor().newInstance();
+        for (Field field : getInstanceFields(objectType)) {
+            Object convertedValue = resolveParameter(field.getType(), field.getName(), request);
+            if (convertedValue == null && field.getType().isPrimitive()) {
+                continue;
+            }
+            if (convertedValue == null && request.getParameter(field.getName()) == null
+                    && field.getType() != FileUpload.class) {
+                continue;
+            }
+            boolean accessible = field.isAccessible();
+            try {
+                if (!accessible) {
+                    field.setAccessible(true);
+                }
+                field.set(object, convertedValue);
+            } finally {
+                if (!accessible) {
+                    field.setAccessible(false);
+                }
+            }
+        }
+        return object;
+    }
+
+    private boolean isMultipart(HttpServletRequest request) {
+        String contentType = request.getContentType();
+        return contentType != null && contentType.toLowerCase().startsWith("multipart/");
+    }
+
+    private FileUpload toFileUpload(Part part) throws IOException {
+        if (part == null || part.getSize() == 0) {
+            return null;
+        }
+
+        FileUpload fileUpload = new FileUpload();
+        fileUpload.setFileName(part.getSubmittedFileName());
+        fileUpload.setContentType(part.getContentType());
+        fileUpload.setSize(part.getSize());
+        try (java.io.InputStream inputStream = part.getInputStream()) {
+            fileUpload.setContent(inputStream.readAllBytes());
+        }
+        return fileUpload;
+    }
+
+    private Field[] getInstanceFields(Class<?> objectType) {
+        Map<String, Field> fields = new HashMap<>();
+        Class<?> currentType = objectType;
+        while (currentType != null && currentType != Object.class) {
+            for (Field field : currentType.getDeclaredFields()) {
+                int modifiers = field.getModifiers();
+                if (!Modifier.isStatic(modifiers) && !field.isSynthetic()) {
+                    fields.putIfAbsent(field.getName(), field);
+                }
+            }
+            currentType = currentType.getSuperclass();
+        }
+        return fields.values().toArray(new Field[0]);
+    }
+
+    private boolean isSimpleType(Class<?> type) {
+        return type == String.class
+                || type == Integer.class || type == int.class
+                || type == Long.class || type == long.class
+                || type == Double.class || type == double.class
+                || type == Float.class || type == float.class
+                || type == Short.class || type == short.class
+                || type == Byte.class || type == byte.class
+                || type == Boolean.class || type == boolean.class
+                || type == Character.class || type == char.class;
+    }
+
+    private Object convertValue(String value, Class<?> targetType, String parameterName) {
+        if (value == null || value.trim().isEmpty()) {
+            if (!targetType.isPrimitive()) {
+                return null;
+            }
+            throw new IllegalArgumentException("Le paramètre '" + parameterName
+                    + "' est obligatoire pour le type primitif " + targetType.getSimpleName() + ".");
+        }
+
+        try {
+            if (targetType == String.class) return value;
+            if (targetType == Integer.class || targetType == int.class) return Integer.valueOf(value);
+            if (targetType == Long.class || targetType == long.class) return Long.valueOf(value);
+            if (targetType == Double.class || targetType == double.class) return Double.valueOf(value);
+            if (targetType == Float.class || targetType == float.class) return Float.valueOf(value);
+            if (targetType == Short.class || targetType == short.class) return Short.valueOf(value);
+            if (targetType == Byte.class || targetType == byte.class) return Byte.valueOf(value);
+            if (targetType == Boolean.class || targetType == boolean.class) return Boolean.valueOf(value);
+            if (targetType == Character.class || targetType == char.class) {
+                if (value.length() != 1) {
+                    throw new IllegalArgumentException("Le paramètre '" + parameterName
+                            + "' doit contenir un seul caractère.");
+                }
+                return value.charAt(0);
+            }
+        } catch (NumberFormatException e) {
+            throw new IllegalArgumentException("Le paramètre '" + parameterName
+                    + "' a une valeur invalide pour le type " + targetType.getSimpleName() + ".", e);
+        }
+        throw new IllegalArgumentException("Type de paramètre non supporté : "
+                + targetType.getName() + " (paramètre '" + parameterName + "').");
+    }
+
+    private Object invoke(Method method, Object instance, Object[] arguments) throws Exception {
+        try {
+            return method.invoke(instance, arguments);
+        } catch (InvocationTargetException e) {
+            Throwable cause = e.getCause();
+            if (cause instanceof Exception) {
+                throw (Exception) cause;
+            }
+            throw e;
         }
     }
 
